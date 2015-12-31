@@ -11,6 +11,7 @@ import datetime
 import time
 import logging
 from bs4 import BeautifulSoup,SoupStrainer,Comment
+from requests.exceptions import ConnectionError
 
 __author__ = 'Felipe Moraes'
 
@@ -44,12 +45,13 @@ class Fetch (threading.Thread):
 	def __init__(self, url):
 		threading.Thread.__init__(self)
 		self.url = url
-		self.doc = None
-
+                self.doc = { 'url' : self.url}
+                self.stoprequest = threading.Event()
+                self.done = False
 	def run(self):
 		try:
 			page = requests.get(self.url)
-		except ConnectionError:
+		except ConnectionError as e:
 			logger.error("Failed to connect")
 			return
 		ud = UnicodeDammit(page.content, is_html=True)
@@ -85,8 +87,10 @@ class Fetch (threading.Thread):
 
 		self.doc = {'description': description, 'title' : title, 'url' : self.url, 'text': text, 'html': page.text, 'timestamp': st}
 		logger.info('Fetched %s url' % self.url)
-
-
+                self.done = True
+        def join(self, timeout=None):
+            self.stoprequest.set()
+            super(Fetch, self).join(timeout)
 
 def main():
 	logger.info('Starting crawler')
@@ -95,31 +99,40 @@ def main():
 	f = open("crawled_urls.txt", "r")
 	crawled_urls = set([line.strip() for line in f])
 	f.close()
+        f = open("failed_urls.txt", "r")
+        failed_urls = set([line.strip() for line in f])
 	f = open("crawled_urls.txt", "a")
+        ff = open("failed_urls.txt", "a")
 	bulk_data = []
 	seeds = []
 	for line in open(seedfile):
-		if line.strip() not in crawled_urls:
+		if line.strip() not in crawled_urls and line.strip() not in failed_urls:
 			seeds.append(line.strip())
 	logger.info('Crawling %d urls' % len(seeds))
 
 	threads = []
-
+        running = []
 	for url in seeds:
 		thread = Fetch(url)
 		thread.start()
 		threads.append(thread)
-		if len(threads) == 20:
+		if len(threads) == 255:
 			for thread in threads:
-				 thread.join()
-
+				 thread.join(5)
+                                 if thread.isAlive():
+                                    logger.info("Thread still alive")
+                                    running.append(thread)
 			for thread in threads:
+                                if thread.isAlive():
+                                    continue
 				doc = thread.doc
-				if doc:
+				if thread.done:
 					doc['_type'] = index
 					doc['_index'] = index
 					doc['_id'] = doc['url']
 					bulk_data.append(doc)
+                                else:
+                                    ff.write(doc['url'] + "\n")
 					
 
 			if len(bulk_data) > 100:
